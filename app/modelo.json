@@ -1,0 +1,9 @@
+{
+ "titulo": "Detector de Parafusos",
+ "tarefa": "detectar",
+ "classes": [
+  "parafuso"
+ ],
+ "tamanho": 640,
+ "limiar": 0.5
+}

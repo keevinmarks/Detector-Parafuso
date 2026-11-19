@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conferir o app</title>
+<style>
+  body{font-family:Arial,sans-serif;margin:16px;line-height:1.45;font-size:16px;color:#111;background:#fff}
+  h1{font-size:22px;font-weight:400;margin-bottom:6px}
+  .ok{color:#126b12}.ruim{color:#b00000}
+  li{margin:6px 0}
+  pre{font-family:monospace;font-size:14px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<h1>Conferir o app</h1>
+<p>Abra esta página no celular, pelo mesmo endereço do app, trocando index.html por conferir.html. Ela testa cada parte do app.js e mede o modelo neste aparelho. Ela diz o que está errado, não como consertar.</p>
+<ol id="lista"></ol>
+<pre id="numeros"></pre>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script src="app.js"></script>
+<script>
+  const lista = document.getElementById('lista');
+  let falhas = 0;
+  function item(ok, texto){ const li = document.createElement('li'); li.className = ok ? 'ok' : 'ruim'; li.textContent = (ok ? 'ok: ' : 'problema: ') + texto; lista.appendChild(li); if (!ok) falhas++; }
+  const perto = (a, b, e = 0.02) => Math.abs(a - b) <= e;
+
+  function testar(nome, f){ try { f(); } catch (e) { item(false, `${nome} quebrou: ${e.message}`); } }
+
+  // imagem de 40 x 20: metade esquerda vermelha, metade direita azul
+  const cv = document.createElement('canvas'); cv.width = 40; cv.height = 20;
+  const g = cv.getContext('2d'); g.fillStyle = 'rgb(255,0,0)'; g.fillRect(0, 0, 20, 20); g.fillStyle = 'rgb(0,0,255)'; g.fillRect(20, 0, 20, 20);
+
+  testar('preparar', () => {
+    const p = preparar(cv, 8, 'detectar'), t = p.tensor;
+    item(t.length === 3 * 8 * 8, `preparar devolve ${t.length} números para um quadro 8 × 8 (o modelo espera 3 × 8 × 8 = 192)`);
+    const max = Math.max(...t);
+    item(max <= 1.0001, `preparar: maior valor do tensor é ${max.toFixed(3)}; o modelo foi treinado com valores de 0 a 1`);
+    const R = i => t[i], B = i => t[128 + i];
+    item(R(4 * 8 + 1) > 0.5 * max && B(4 * 8 + 1) < 0.1 * max && B(4 * 8 + 6) > 0.5 * max,
+      'preparar: na linha do meio, o canal vermelho deve valer 1 à esquerda e o azul, 1 à direita (canais separados, primeiro todo o R)');
+    item(perto(R(0), 114 / 255) && perto(R(7 * 8), 114 / 255),
+      'preparar (detectar): a imagem de 40 × 20 deve entrar inteira, sem esticar, com faixas cinza (114) em cima e embaixo');
+    item(perto(p.escala, 0.2) && perto(p.dx, 0) && perto(p.dy, 2),
+      `preparar (detectar): escala ${(+p.escala).toFixed(3)}, dx ${(+p.dx).toFixed(2)}, dy ${(+p.dy).toFixed(2)}; para 40 × 20 num quadro de 8 o certo é 0.2, 0 e 2`);
+    const q = preparar(cv, 8, 'classificar').tensor;
+    const mq = Math.max(...q);
+    item(q[4 * 8 + 1] > 0.5 * mq && q[128 + 4 * 8 + 6] > 0.5 * mq && q[128 + 4 * 8 + 1] < 0.1 * mq, 'preparar (classificar): o quadrado do meio deve ter vermelho à esquerda e azul à direita');
+  });
+
+  testar('decidir', () => {
+    const a = decidir(new Float32Array([0.1, 0.9]), ['boa', 'estragada'], 0.6);
+    item(a.classe === 'estragada' && perto(a.prob, 0.9), 'decidir: com [0.1, 0.9] a resposta é a segunda classe, com 90%');
+    const b = decidir(new Float32Array([0.4, 0.35, 0.25]), ['a', 'b', 'c'], 0.6);
+    item(b.classe === 'não tenho certeza', `decidir: com a maior probabilidade em 40% e limiar de 60%, o app respondeu "${b.classe}"; ele não deveria arriscar`);
+  });
+
+  testar('caixas', () => {
+    // 3 candidatas, 2 classes; formato [4 + 2, 3]: cada coluna é uma caixa
+    const N = 3, s = new Float32Array(6 * N);
+    const col = (i, v) => v.forEach((x, l) => s[l * N + i] = x);
+    col(0, [100, 50, 20, 10, 0.9, 0.1]);
+    col(1, [200, 80, 40, 40, 0.05, 0.02]);
+    col(2, [30, 30, 10, 20, 0.2, 0.7]);
+    const r = caixas(s, 2, 0.5);
+    item(r.length === 2, `caixas: de 3 candidatas, 2 passam do limiar; o app achou ${r.length}`);
+    const a = r.find(c => c.classe === 0), b = r.find(c => c.classe === 1);
+    item(!!a && perto(a.x0, 90) && perto(a.y0, 45) && perto(a.x1, 110) && perto(a.y1, 55) && perto(a.nota, 0.9),
+      'caixas: a candidata 0 (centro 100, 50, tamanho 20 × 10, nota 0.9 na classe 0) deve virar a caixa 90, 45, 110, 55');
+    item(!!b && perto(b.nota, 0.7), 'caixas: a candidata 2 é da classe 1, com nota 0.7');
+  });
+
+  testar('nms', () => {
+    const L = [{ x0: 0, y0: 0, x1: 10, y1: 10, nota: 0.9, classe: 0 }, { x0: 1, y0: 1, x1: 11, y1: 11, nota: 0.8, classe: 0 },
+               { x0: 50, y0: 50, x1: 60, y1: 60, nota: 0.7, classe: 0 }, { x0: 0, y0: 0, x1: 10, y1: 10, nota: 0.6, classe: 1 }];
+    const r = nms(L, 0.45);
+    item(r.length === 3, `nms: de 4 caixas, uma é repetida (quase em cima de outra da mesma classe); deviam ficar 3 e ficaram ${r.length}`);
+    item(r.length > 0 && r[0].nota === 0.9, 'nms: entre as repetidas, fica a de maior nota');
+  });
+
+  testar('desfazer', () => {
+    const c = desfazer({ x0: 10, y0: 90, x1: 50, y1: 130, nota: 1, classe: 0 }, { escala: 0.5, dx: 0, dy: 80 });
+    item(perto(c.x0, 20) && perto(c.y0, 20) && perto(c.x1, 100) && perto(c.y1, 100),
+      `desfazer: com escala 0.5 e faixa de 80 em cima, a caixa 10, 90, 50, 130 volta para 20, 20, 100, 100 na foto; deu ${[c.x0, c.y0, c.x1, c.y1].map(v => +v.toFixed(1)).join(', ')}`);
+  });
+
+  (async () => {
+    try {
+      const info = await carregar('.');
+      const ok = ['classificar', 'detectar'].includes(info.tarefa) && Array.isArray(info.classes) && info.classes.length > 0 &&
+                 info.tamanho % 32 === 0 && info.limiar > 0.05 && info.limiar < 0.95 && info.titulo;
+      item(ok, 'modelo.json: precisa de titulo, tarefa (classificar ou detectar), classes, tamanho múltiplo de 32 e limiar entre 0.05 e 0.95');
+      const T = info.tamanho, x = new ort.Tensor('float32', new Float32Array(3 * T * T).fill(0.5), [1, 3, T, T]);
+      let r = await SESSAO.run({ [SESSAO.inputNames[0]]: x });
+      const n = r[SESSAO.outputNames[0]].data.length, dims = r[SESSAO.outputNames[0]].dims;
+      const forma = info.tarefa === 'classificar' ? n === info.classes.length : dims[1] === 4 + info.classes.length;
+      item(forma, `modelo.onnx: a saída tem forma [${dims}], e o modelo.json diz ${info.classes.length} classes para ${info.tarefa}`);
+      const ts = [];
+      for (let k = 0; k < 5; k++){ const t0 = performance.now(); await SESSAO.run({ [SESSAO.inputNames[0]]: x }); ts.push(performance.now() - t0); }
+      ts.sort((a, b) => a - b);
+      document.getElementById('numeros').textContent =
+        `neste aparelho: ${ts[2].toFixed(0)} ms por análise (mediana de 5), ${(1000 / ts[2]).toFixed(1)} análises por segundo\n` +
+        `tarefa: ${info.tarefa}, classes: ${info.classes.join(', ')}, quadro ${T} × ${T}, limiar ${info.limiar}\n` +
+        `problemas encontrados: ${falhas}`;
+    } catch (e) {
+      item(false, 'não consegui carregar o modelo.json e o modelo.onnx desta pasta: ' + e.message);
+      document.getElementById('numeros').textContent = `problemas encontrados: ${falhas}`;
+    }
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icone-192.png">
+<title>Visão</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#000;color:#fff;font-family:Arial,sans-serif;overflow:hidden}
+  #tela{position:fixed;inset:0}
+  video,img#foto,#sobre{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain}
+  img#foto{display:none}
+  #topo{position:absolute;top:0;left:0;right:0;padding:12px 14px;background:rgba(0,0,0,.6);font-size:18px}
+  #res{position:absolute;bottom:64px;left:0;right:0;padding:10px 14px;background:rgba(0,0,0,.6);font-size:30px;line-height:1.25}
+  #res small{display:block;font-size:14px;color:#bbb}
+  #botoes{position:absolute;bottom:0;left:0;right:0;display:flex;gap:8px;padding:10px}
+  #botoes button,#botoes label{flex:1;text-align:center;font-size:17px;padding:12px 6px;border-radius:8px;border:0;background:#fff;color:#000}
+  #botoes input{display:none}
+</style>
+</head>
+<body>
+<div id="tela">
+  <video id="video" playsinline muted autoplay></video>
+  <img id="foto" alt="">
+  <canvas id="sobre"></canvas>
+  <div id="topo">carregando o modelo...</div>
+  <div id="res"></div>
+  <div id="botoes">
+    <button id="bcam">câmera</button>
+    <label>foto da galeria<input type="file" id="arq" accept="image/*"></label>
+    <button id="bpausa">pausar</button>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script src="app.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  let modo = 'nada', pausado = false;
+
+  function mostrar(r, fonte){
+    const cv = $('sobre'); cv.width = cv.clientWidth; cv.height = cv.clientHeight;
+    const g = cv.getContext('2d');
+    const w = fonte.videoWidth || fonte.naturalWidth, h = fonte.videoHeight || fonte.naturalHeight;
+    const e = Math.min(cv.width / w, cv.height / h), ox = (cv.width - w * e) / 2, oy = (cv.height - h * e) / 2;
+    const tempo = `<small>${Math.round(r.ms)} ms por análise · ${INFO.titulo}</small>`;
+    if (INFO.tarefa === 'classificar'){
+      $('res').innerHTML = `${r.classe} ${Math.round(r.prob * 100)}%${tempo}`;
+      return;
+    }
+    const conta = {};
+    g.lineWidth = 3; g.font = '16px Arial';
+    for (const c of r.caixas){
+      const nome = INFO.classes[c.classe];
+      conta[nome] = (conta[nome] || 0) + 1;
+      g.strokeStyle = '#ff3030'; g.strokeRect(ox + c.x0 * e, oy + c.y0 * e, (c.x1 - c.x0) * e, (c.y1 - c.y0) * e);
+      g.fillStyle = '#ff3030'; g.fillText(`${nome} ${Math.round(c.nota * 100)}%`, ox + c.x0 * e + 3, oy + c.y0 * e - 5);
+    }
+    const txt = INFO.classes.map(n => `${n}: ${conta[n] || 0}`).join(' · ');
+    $('res').innerHTML = `${txt}${tempo}`;
+  }
+
+  async function laco(){
+    while (modo === 'camera'){
+      if (!pausado && $('video').videoWidth) mostrar(await analisar($('video')), $('video'));
+      await new Promise(r => setTimeout(r, 30));
+    }
+  }
+
+  $('bcam').onclick = async () => {
+    try {
+      const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false });
+      $('video').srcObject = st; $('video').style.display = 'block'; $('foto').style.display = 'none';
+      modo = 'camera'; pausado = false; $('bpausa').textContent = 'pausar'; laco();
+    } catch (e) { $('res').textContent = 'A câmera não abriu: ' + e.name; }
+  };
+  $('bpausa').onclick = () => { pausado = !pausado; $('bpausa').textContent = pausado ? 'continuar' : 'pausar'; if (pausado) $('video').pause(); else $('video').play(); };
+  $('arq').onchange = () => {
+    const f = $('arq').files[0]; if (!f) return;
+    modo = 'foto'; $('video').style.display = 'none';
+    const im = $('foto'); im.onload = async () => mostrar(await analisar(im), im);
+    im.src = URL.createObjectURL(f); im.style.display = 'block';
+  };
+
+  carregar().then(info => {
+    $('topo').textContent = info.titulo; document.title = info.titulo;
+    $('res').innerHTML = '<small>toque em câmera ou escolha uma foto</small>';
+  }).catch(e => { $('topo').textContent = 'Não consegui carregar o modelo: ' + e.message; });
+
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
